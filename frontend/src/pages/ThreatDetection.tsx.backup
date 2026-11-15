@@ -1,0 +1,141 @@
+import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
+import { Search } from 'lucide-react'
+import { api } from '../api/client'
+import { SeverityBadge } from '../components/common/SeverityBadge'
+import { formatRelativeTime, formatConfidence } from '../utils/severity'
+import type { SecurityEventList } from '../types'
+
+const SEVERITIES = ['ALL', 'CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'NORMAL']
+
+export function ThreatDetection() {
+  const navigate = useNavigate()
+  const [page, setPage] = useState(1)
+  const [severity, setSeverity] = useState('ALL')
+  const [search, setSearch] = useState('')
+
+  const { data, isLoading } = useQuery<SecurityEventList>({
+    queryKey: ['events', page, severity],
+    queryFn: () => api.events.list({
+      page,
+      limit: 20,
+      severity: severity === 'ALL' ? undefined : severity,
+    }) as Promise<SecurityEventList>,
+    refetchInterval: 15_000,
+  })
+
+  const filtered = (data?.items ?? []).filter((ev) => {
+    if (!search) return true
+    const q = search.toLowerCase()
+    return ev.source_ip.includes(q) || ev.destination_ip.includes(q) ||
+      (ev.attack_category ?? '').toLowerCase().includes(q) ||
+      (ev.suricata_signature ?? '').toLowerCase().includes(q)
+  })
+
+  return (
+    <div className="p-6 space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-text-primary font-semibold text-lg">Threat Detection</h2>
+        <span className="text-text-muted text-sm">{data?.total ?? 0} total events</span>
+      </div>
+
+      {/* Filters */}
+      <div className="flex gap-3">
+        <div className="relative flex-1 max-w-xs">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
+          <input
+            type="text"
+            placeholder="Search IP, category..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full bg-bg-secondary border border-border rounded pl-9 pr-3 py-2 text-sm text-text-primary placeholder-text-muted focus:outline-none focus:border-accent-cyan"
+          />
+        </div>
+        <div className="flex gap-2">
+          {SEVERITIES.map((s) => (
+            <button
+              key={s}
+              onClick={() => { setSeverity(s); setPage(1) }}
+              className={`px-3 py-1.5 text-xs rounded border transition-colors ${
+                severity === s
+                  ? 'bg-accent-cyan/20 border-accent-cyan/50 text-accent-cyan'
+                  : 'bg-bg-secondary border-border text-text-muted hover:border-accent-cyan/30'
+              }`}
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Events table */}
+      <div className="bg-bg-secondary border border-border rounded-lg overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="border-b border-border">
+            <tr className="text-text-muted">
+              {['Time', 'Source IP', 'Destination', 'Category', 'Severity', 'Risk', 'ML', 'Suricata'].map((h) => (
+                <th key={h} className="text-left px-4 py-3 font-normal text-xs">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {isLoading && (
+              <tr><td colSpan={8} className="py-12 text-center text-text-muted">Loading…</td></tr>
+            )}
+            {!isLoading && filtered.length === 0 && (
+              <tr><td colSpan={8} className="py-12 text-center text-text-muted">No events found</td></tr>
+            )}
+            {filtered.map((ev) => (
+              <tr
+                key={ev.event_id}
+                onClick={() => navigate(`/events/${ev.event_id}`)}
+                className="border-b border-border/50 hover:bg-bg-tertiary cursor-pointer transition-colors"
+              >
+                <td className="px-4 py-3 font-mono text-xs text-text-muted">{formatRelativeTime(ev.created_at)}</td>
+                <td className="px-4 py-3 font-mono text-xs text-accent-cyan">{ev.source_ip}</td>
+                <td className="px-4 py-3 font-mono text-xs text-text-secondary">{ev.destination_ip}:{ev.destination_port}</td>
+                <td className="px-4 py-3 text-xs text-text-secondary">{ev.attack_category ?? '—'}</td>
+                <td className="px-4 py-3"><SeverityBadge severity={ev.severity} size="sm" /></td>
+                <td className="px-4 py-3 font-mono text-xs">{ev.risk_score ?? '—'}</td>
+                <td className="px-4 py-3 text-xs">
+                  {ev.ml_prediction ? (
+                    <span className={ev.ml_prediction === 'ATTACK' ? 'text-red-400' : 'text-green-400'}>
+                      {ev.ml_prediction} {formatConfidence(ev.ml_confidence)}
+                    </span>
+                  ) : '—'}
+                </td>
+                <td className="px-4 py-3 text-xs">
+                  {ev.suricata_alert ? (
+                    <span className="text-orange-400">● Alert</span>
+                  ) : <span className="text-text-muted">—</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Pagination */}
+      {data && data.pages > 1 && (
+        <div className="flex items-center justify-center gap-2">
+          <button
+            disabled={page === 1}
+            onClick={() => setPage((p) => p - 1)}
+            className="px-3 py-1 text-xs bg-bg-secondary border border-border rounded disabled:opacity-50 hover:border-accent-cyan/40 text-text-secondary"
+          >
+            Previous
+          </button>
+          <span className="text-xs text-text-muted">Page {page} of {data.pages}</span>
+          <button
+            disabled={page === data.pages}
+            onClick={() => setPage((p) => p + 1)}
+            className="px-3 py-1 text-xs bg-bg-secondary border border-border rounded disabled:opacity-50 hover:border-accent-cyan/40 text-text-secondary"
+          >
+            Next
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}

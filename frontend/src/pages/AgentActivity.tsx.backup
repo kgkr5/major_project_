@@ -1,0 +1,164 @@
+import { useQuery } from '@tanstack/react-query'
+import { Bot, CheckCircle, Clock } from 'lucide-react'
+import { api } from '../api/client'
+import { StatusIndicator } from '../components/common/StatusIndicator'
+import { formatRelativeTime } from '../utils/severity'
+import type { AllAgentStatus } from '../types'
+
+export function AgentActivity() {
+  const { data: agentStatus } = useQuery<AllAgentStatus>({
+    queryKey: ['agent-status'],
+    queryFn: () => api.agents.status() as Promise<AllAgentStatus>,
+    refetchInterval: 5_000,
+  })
+
+  const { data: detEvents } = useQuery({
+    queryKey: ['det-events'],
+    queryFn: () => api.agents.detectionEvents(10),
+    refetchInterval: 10_000,
+  })
+
+  const { data: investigations } = useQuery({
+    queryKey: ['investigations-brief'],
+    queryFn: () => api.agents.investigations(10),
+    refetchInterval: 10_000,
+  })
+
+  const { data: recommendations } = useQuery({
+    queryKey: ['recommendations-brief'],
+    queryFn: () => api.agents.recommendations(10),
+    refetchInterval: 10_000,
+  })
+
+  const agents = [
+    {
+      key: 'detection',
+      name: 'Detection Agent',
+      color: '#ef4444',
+      status: agentStatus?.detection,
+      description: 'Correlates Suricata alerts with ML predictions',
+    },
+    {
+      key: 'analysis',
+      name: 'Attack Analysis Agent',
+      color: '#f97316',
+      status: agentStatus?.analysis,
+      description: 'Investigates threats and constructs attack paths',
+    },
+    {
+      key: 'defence',
+      name: 'Defence Agent',
+      color: '#8b5cf6',
+      status: agentStatus?.defence,
+      description: 'Generates defensive recommendations (read-only)',
+    },
+  ]
+
+  return (
+    <div className="p-6 space-y-6">
+      <h2 className="text-text-primary font-semibold text-lg">AI Agent Activity</h2>
+
+      {/* Agent status cards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {agents.map((agent) => (
+          <div key={agent.key} className="bg-bg-secondary border border-border rounded-lg p-4">
+            <div className="flex items-center gap-3 mb-3">
+              <Bot size={20} style={{ color: agent.color }} />
+              <div>
+                <p className="text-sm font-medium text-text-primary">{agent.name}</p>
+                <p className="text-xs text-text-muted">{agent.description}</p>
+              </div>
+            </div>
+            <StatusIndicator
+              status={agent.status?.status ?? 'UNKNOWN'}
+              label={agent.status?.status ?? 'UNKNOWN'}
+            />
+            <div className="mt-3 space-y-1">
+              <div className="flex justify-between text-xs">
+                <span className="text-text-muted">Events processed</span>
+                <span className="text-text-secondary font-mono">{agent.status?.events_processed ?? 0}</span>
+              </div>
+              {agent.status?.last_activity && (
+                <div className="flex justify-between text-xs">
+                  <span className="text-text-muted">Last activity</span>
+                  <span className="text-text-secondary">{formatRelativeTime(agent.status.last_activity)}</span>
+                </div>
+              )}
+              {agent.status?.error_message && (
+                <p className="text-xs text-red-400 mt-1">⚠ {agent.status.error_message}</p>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Recent detections, investigations, recommendations */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Detection events */}
+        <div className="bg-bg-secondary border border-border rounded-lg overflow-hidden">
+          <div className="p-3 border-b border-border flex items-center gap-2">
+            <CheckCircle size={14} className="text-red-400" />
+            <h3 className="text-sm text-text-secondary">Recent Detections</h3>
+          </div>
+          <div className="divide-y divide-border max-h-64 overflow-y-auto">
+            {((detEvents as any[]) ?? []).map((ev: any, i: number) => (
+              <div key={i} className="p-3">
+                <div className="flex justify-between items-start">
+                  <span className="font-mono text-xs text-accent-cyan">{ev.source_ip}</span>
+                  <span className={`text-xs ${ev.severity === 'CRITICAL' ? 'text-red-400' : ev.severity === 'HIGH' ? 'text-orange-400' : 'text-yellow-400'}`}>{ev.severity}</span>
+                </div>
+                <p className="text-xs text-text-muted mt-0.5">{ev.attack_category ?? 'Unknown'}</p>
+              </div>
+            ))}
+            {!detEvents || (detEvents as any[]).length === 0 && (
+              <p className="p-4 text-xs text-text-muted">No detections yet</p>
+            )}
+          </div>
+        </div>
+
+        {/* Investigations */}
+        <div className="bg-bg-secondary border border-border rounded-lg overflow-hidden">
+          <div className="p-3 border-b border-border flex items-center gap-2">
+            <Clock size={14} className="text-orange-400" />
+            <h3 className="text-sm text-text-secondary">Investigations</h3>
+          </div>
+          <div className="divide-y divide-border max-h-64 overflow-y-auto">
+            {((investigations as any[]) ?? []).map((inv: any, i: number) => (
+              <div key={i} className="p-3">
+                <p className="text-xs font-mono text-purple-400 truncate">{inv.attack_type ?? 'Unknown'}</p>
+                <p className="text-xs text-text-muted mt-0.5">{inv.entry_point} → {inv.target}</p>
+                {inv.llm_used && <span className="text-xs text-purple-300">LLM analysis</span>}
+              </div>
+            ))}
+            {!investigations || (investigations as any[]).length === 0 && (
+              <p className="p-4 text-xs text-text-muted">No investigations yet</p>
+            )}
+          </div>
+        </div>
+
+        {/* Recommendations */}
+        <div className="bg-bg-secondary border border-border rounded-lg overflow-hidden">
+          <div className="p-3 border-b border-border flex items-center gap-2">
+            <Bot size={14} className="text-purple-400" />
+            <h3 className="text-sm text-text-secondary">Recommendations</h3>
+          </div>
+          <div className="divide-y divide-border max-h-64 overflow-y-auto">
+            {((recommendations as any[]) ?? []).map((rec: any, i: number) => (
+              <div key={i} className="p-3">
+                <div className="flex justify-between items-start">
+                  <span className="text-xs text-purple-400">{rec.priority}</span>
+                  <span className="text-xs text-text-muted">{rec.execution_status}</span>
+                </div>
+                <p className="text-xs text-text-muted mt-0.5">{rec.risk_level} risk</p>
+                <p className="text-xs text-yellow-400 mt-0.5">⚠ Requires admin approval</p>
+              </div>
+            ))}
+            {!recommendations || (recommendations as any[]).length === 0 && (
+              <p className="p-4 text-xs text-text-muted">No recommendations yet</p>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}

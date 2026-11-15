@@ -1,0 +1,129 @@
+import { useQuery } from '@tanstack/react-query'
+import {
+  Activity, ShieldAlert, AlertTriangle,
+  CheckCircle, Cpu, Bot, TrendingUp
+} from 'lucide-react'
+import { api } from '../api/client'
+import { StatCard } from '../components/common/StatCard'
+import { SeverityBadge } from '../components/common/SeverityBadge'
+import { ThreatTimeline } from '../components/charts/ThreatTimeline'
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts'
+import { formatRelativeTime, SEVERITY_COLORS } from '../utils/severity'
+import type { DashboardStats, SecurityEvent } from '../types'
+import { useStore } from '../store/useStore'
+
+export function Overview() {
+  const { data: stats } = useQuery<DashboardStats>({
+    queryKey: ['stats'],
+    queryFn: () => api.dashboard.stats() as Promise<DashboardStats>,
+    refetchInterval: 10_000,
+  })
+
+  const { data: timeline } = useQuery({
+    queryKey: ['timeline'],
+    queryFn: () => api.dashboard.threatTimeline(24),
+    refetchInterval: 30_000,
+  })
+
+  const { data: severity } = useQuery({
+    queryKey: ['severity-dist'],
+    queryFn: () => api.dashboard.severityDistribution(),
+    refetchInterval: 30_000,
+  })
+
+  const { data: recentEvents } = useQuery({
+    queryKey: ['recent-events'],
+    queryFn: () => api.events.list({ limit: 10 }) as Promise<{ items: SecurityEvent[] }>,
+    refetchInterval: 10_000,
+  })
+
+  const liveEvents = useStore((s) => s.liveEvents)
+
+  const pieData = severity
+    ? Object.entries(severity as Record<string, number>)
+        .filter(([, v]) => v > 0)
+        .map(([k, v]) => ({ name: k.toUpperCase(), value: v }))
+    : []
+
+  const displayEvents = liveEvents.length > 0 ? liveEvents.slice(0, 10) : (recentEvents?.items ?? [])
+
+  return (
+    <div className="p-6 space-y-6">
+      <h2 className="text-text-primary font-semibold text-lg">Security Overview</h2>
+
+      {/* Stat cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard title="Total Flows" value={stats?.total_flows ?? 0} icon={Activity} color="#06b6d4" />
+        <StatCard title="Security Events" value={stats?.total_events ?? 0} icon={ShieldAlert} color="#f97316" />
+        <StatCard title="Attacks Detected" value={stats?.attacks_detected ?? 0} icon={AlertTriangle} color="#ef4444" />
+        <StatCard title="Critical Threats" value={stats?.critical_threats ?? 0} icon={AlertTriangle} color="#ef4444" subtitle="Needs immediate attention" />
+        <StatCard title="High Risk" value={stats?.high_risk_events ?? 0} icon={TrendingUp} color="#f97316" />
+        <StatCard title="Benign Traffic" value={stats?.benign_traffic ?? 0} icon={CheckCircle} color="#22c55e" />
+        <StatCard title="Model Status" value={stats?.model_status ?? 'UNKNOWN'} icon={Cpu} color={stats?.model_status === 'OK' ? '#22c55e' : '#ef4444'} />
+        <StatCard title="AI Agents" value={`${stats?.agents_running ?? 0} / 3`} icon={Bot} color="#8b5cf6" />
+      </div>
+
+      {/* Charts row */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2 bg-bg-secondary border border-border rounded-lg p-4">
+          <h3 className="text-text-secondary text-sm font-medium mb-4">Threat Activity (24h)</h3>
+          <ThreatTimeline data={(timeline as any) ?? []} />
+        </div>
+        <div className="bg-bg-secondary border border-border rounded-lg p-4">
+          <h3 className="text-text-secondary text-sm font-medium mb-4">Severity Distribution</h3>
+          {pieData.length > 0 ? (
+            <ResponsiveContainer width="100%" height={200}>
+              <PieChart>
+                <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={70} label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`} labelLine={false}>
+                  {pieData.map((entry) => (
+                    <Cell key={entry.name} fill={SEVERITY_COLORS[entry.name] ?? '#6b7280'} />
+                  ))}
+                </Pie>
+                <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #1f2937' }} />
+              </PieChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="h-48 flex items-center justify-center text-text-muted text-sm">No data</div>
+          )}
+        </div>
+      </div>
+
+      {/* Recent events */}
+      <div className="bg-bg-secondary border border-border rounded-lg p-4">
+        <h3 className="text-text-secondary text-sm font-medium mb-4">
+          Recent Security Events
+          {liveEvents.length > 0 && <span className="ml-2 text-xs text-green-400">● Live</span>}
+        </h3>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-text-muted border-b border-border">
+                <th className="text-left py-2 pr-4 font-normal">Time</th>
+                <th className="text-left py-2 pr-4 font-normal">Source IP</th>
+                <th className="text-left py-2 pr-4 font-normal">Destination IP</th>
+                <th className="text-left py-2 pr-4 font-normal">Category</th>
+                <th className="text-left py-2 pr-4 font-normal">Severity</th>
+                <th className="text-left py-2 font-normal">Risk Score</th>
+              </tr>
+            </thead>
+            <tbody>
+              {displayEvents.map((ev) => (
+                <tr key={ev.event_id} className="border-b border-border/50 hover:bg-bg-tertiary">
+                  <td className="py-2 pr-4 font-mono text-xs text-text-muted">{formatRelativeTime(ev.created_at)}</td>
+                  <td className="py-2 pr-4 font-mono text-xs text-accent-cyan">{ev.source_ip}</td>
+                  <td className="py-2 pr-4 font-mono text-xs text-text-secondary">{ev.destination_ip}</td>
+                  <td className="py-2 pr-4 text-xs text-text-secondary">{ev.attack_category ?? '—'}</td>
+                  <td className="py-2 pr-4"><SeverityBadge severity={ev.severity} size="sm" /></td>
+                  <td className="py-2 font-mono text-xs">{ev.risk_score ?? '—'}</td>
+                </tr>
+              ))}
+              {displayEvents.length === 0 && (
+                <tr><td colSpan={6} className="py-8 text-center text-text-muted text-sm">No events yet</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}

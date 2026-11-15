@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+pip-log.txt
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+*.pyo
+
+# Environment
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Models (large files)
+models/*.pkl
+models/*.joblib
+models/*.h5
+# Keep metadata and gitkeep
+!models/.gitkeep
+!models/*.json
+
+# Data
+data/captures/*.pcap
+data/captures/*.pcapng
+!data/captures/.gitkeep
+data/test_pcaps/*.pcap
+!data/test_pcaps/.gitkeep
+data/*.db
+data/*.sqlite
+
+# Logs
+logs/*.log
+!logs/.gitkeep
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.tsbuildinfo
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# CICIDS dataset (large)
+ml/data/
+*.csv
+
+# Temp uploads
+backend/uploads/

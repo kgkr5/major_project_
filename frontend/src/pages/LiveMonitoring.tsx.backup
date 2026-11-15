@@ -1,0 +1,83 @@
+import React, { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { Upload } from 'lucide-react'
+import { api, uploadPcap } from '../api/client'
+import type { NetworkFlow } from '../types'
+import { useStore } from '../store/useStore'
+
+export function LiveMonitoring() {
+  const [uploadStatus, setUploadStatus] = useState<string | null>(null)
+  const liveEvents = useStore((s) => s.liveEvents)
+
+  const { data } = useQuery<{ items: NetworkFlow[]; total: number }>({
+    queryKey: ['flows'],
+    queryFn: () => api.flows.list(1, 30) as Promise<{ items: NetworkFlow[]; total: number }>,
+    refetchInterval: 10_000,
+  })
+
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setUploadStatus('Uploading...')
+    try {
+      const result = await uploadPcap(file)
+      setUploadStatus(`Task ${result.task_id} – ${result.message}`)
+    } catch (err: unknown) {
+      setUploadStatus(`Error: ${err instanceof Error ? err.message : 'unknown error'}`)
+    }
+  }
+
+  return (
+    <div className="p-6 space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-text-primary font-semibold text-lg">Live Network Monitoring</h2>
+        <label className="flex items-center gap-2 px-3 py-2 bg-accent-cyan/10 border border-accent-cyan/30 text-accent-cyan text-sm rounded cursor-pointer hover:bg-accent-cyan/20">
+          <Upload size={14} />
+          Upload PCAP
+          <input type="file" accept=".pcap,.pcapng" className="hidden" onChange={handleUpload} />
+        </label>
+      </div>
+
+      {uploadStatus && (
+        <div className="bg-bg-secondary border border-accent-cyan/30 rounded-lg p-3 text-sm text-accent-cyan">
+          {uploadStatus}
+        </div>
+      )}
+
+      <div className="bg-bg-secondary border border-border rounded-lg overflow-hidden">
+        <div className="p-3 border-b border-border flex justify-between items-center">
+          <span className="text-text-muted text-xs">{data?.total ?? 0} flows recorded</span>
+          {liveEvents.length > 0 && <span className="text-xs text-green-400">● Live events: {liveEvents.length}</span>}
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="border-b border-border">
+              <tr className="text-text-muted">
+                {['Source IP', 'Destination IP', 'Src Port', 'Dst Port', 'Protocol', 'Duration (µs)', 'PCAP Source', 'Time'].map((h) => (
+                  <th key={h} className="text-left px-4 py-2 font-normal text-xs">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {(data?.items ?? []).length === 0 && (
+                <tr><td colSpan={8} className="py-10 text-center text-text-muted text-sm">No flows recorded yet. Upload a PCAP to begin analysis.</td></tr>
+              )}
+              {(data?.items ?? []).map((f) => (
+                <tr key={f.flow_id} className="border-b border-border/50 hover:bg-bg-tertiary">
+                  <td className="px-4 py-2 font-mono text-xs text-accent-cyan">{f.source_ip}</td>
+                  <td className="px-4 py-2 font-mono text-xs text-text-secondary">{f.destination_ip}</td>
+                  <td className="px-4 py-2 font-mono text-xs text-text-muted">{f.source_port}</td>
+                  <td className="px-4 py-2 font-mono text-xs text-text-muted">{f.destination_port}</td>
+                  <td className="px-4 py-2 text-xs text-text-secondary">{f.protocol}</td>
+                  <td className="px-4 py-2 font-mono text-xs text-text-muted">{f.duration_us?.toLocaleString()}</td>
+                  <td className="px-4 py-2 text-xs text-text-muted truncate max-w-32">{f.pcap_source?.split('/').pop()}</td>
+                  <td className="px-4 py-2 font-mono text-xs text-text-muted">{new Date(f.created_at).toLocaleTimeString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}

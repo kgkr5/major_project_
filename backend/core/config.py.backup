@@ -1,0 +1,96 @@
+"""
+Centralized configuration for AgentShield backend.
+All settings loaded from environment variables / .env file.
+No credentials are hardcoded.
+"""
+
+from pathlib import Path
+from typing import List
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    # ── Application ──────────────────────────────────────────────
+    app_name: str = "AgentShield"
+    app_version: str = "1.0.0"
+    debug: bool = False
+
+    # ── API ───────────────────────────────────────────────────────
+    api_host: str = "0.0.0.0"
+    api_port: int = 8000
+    cors_origins: List[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+    # ── Database ─────────────────────────────────────────────────
+    database_url: str = "sqlite+aiosqlite:///./data/agentshield.db"
+
+    # ── Network capture ──────────────────────────────────────────
+    capture_interface: str = "eth0"
+    pcap_rotation_seconds: int = 60
+    pcap_output_dir: Path = Path("data/captures")
+
+    # ── Suricata ─────────────────────────────────────────────────
+    suricata_eve_log: Path = Path("/var/log/suricata/eve.json")
+    suricata_dedup_window_seconds: int = 30
+
+    # ── ML Model ─────────────────────────────────────────────────
+    model_path: Path = Path("models/agentshield_rf.pkl")
+    model_metadata_path: Path = Path("models/agentshield_rf_metadata.json")
+    # Path to a minimal test model (used in CI without real CICIDS data)
+    test_model_path: Path = Path("models/agentshield_rf_test.pkl")
+
+    # ── Ollama ────────────────────────────────────────────────────
+    ollama_host: str = "http://localhost:11434"
+    ollama_model: str = "llama3.2"
+    ollama_timeout_seconds: int = 30
+
+    # ── Risk thresholds ───────────────────────────────────────────
+    risk_critical_threshold: int = 90
+    risk_high_threshold: int = 70
+    risk_medium_threshold: int = 40
+    risk_low_threshold: int = 1
+
+    # ── Suricata severity weights (1=low, 2=medium, 3=high) ───────
+    suricata_severity_weights: dict = {1: 20, 2: 35, 3: 50}
+
+    # ── Upload ───────────────────────────────────────────────────
+    max_pcap_upload_mb: int = 50
+    upload_dir: Path = Path("data/uploads")
+
+    # ── Logging ──────────────────────────────────────────────────
+    log_level: str = "INFO"
+    log_file: Path = Path("logs/agentshield.log")
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def split_cors(cls, v: object) -> List[str]:
+        if isinstance(v, str):
+            return [origin.strip() for origin in v.split(",")]
+        return v  # type: ignore[return-value]
+
+    @property
+    def max_pcap_upload_bytes(self) -> int:
+        return self.max_pcap_upload_mb * 1024 * 1024
+
+    def severity_label(self, score: int) -> str:
+        if score >= self.risk_critical_threshold:
+            return "CRITICAL"
+        if score >= self.risk_high_threshold:
+            return "HIGH"
+        if score >= self.risk_medium_threshold:
+            return "MEDIUM"
+        if score >= self.risk_low_threshold:
+            return "LOW"
+        return "NORMAL"
+
+
+# Singleton — import this everywhere
+settings = Settings()

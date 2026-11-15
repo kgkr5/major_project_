@@ -1,0 +1,101 @@
+import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { api } from '../api/client'
+import { AttackPathGraph } from '../components/flow/AttackPathGraph'
+import type { InvestigationResult } from '../types'
+
+export function AttackPath() {
+  const [selected, setSelected] = useState<string | null>(null)
+
+  const { data: investigations } = useQuery<InvestigationResult[]>({
+    queryKey: ['investigations'],
+    queryFn: () => api.agents.investigations(20) as Promise<InvestigationResult[]>,
+    refetchInterval: 15_000,
+  })
+
+  const selectedInv = investigations?.find((i) => i.investigation_id === selected)
+
+  return (
+    <div className="p-6 flex gap-4 h-full">
+      {/* Investigation list */}
+      <div className="w-72 bg-bg-secondary border border-border rounded-lg overflow-y-auto shrink-0">
+        <div className="p-3 border-b border-border">
+          <h3 className="text-text-secondary text-sm font-medium">Investigations</h3>
+        </div>
+        <div className="divide-y divide-border">
+          {(investigations ?? []).length === 0 && (
+            <p className="p-4 text-text-muted text-sm">No investigations yet</p>
+          )}
+          {(investigations ?? []).map((inv) => (
+            <button
+              key={inv.investigation_id}
+              onClick={() => setSelected(inv.investigation_id)}
+              className={`w-full text-left p-3 transition-colors hover:bg-bg-tertiary ${
+                selected === inv.investigation_id ? 'bg-accent-cyan/10' : ''
+              }`}
+            >
+              <p className="text-xs font-mono text-accent-cyan truncate">{inv.investigation_id}</p>
+              <p className="text-xs text-text-secondary mt-0.5">{inv.attack_type ?? 'Unknown'}</p>
+              <p className="text-xs text-text-muted mt-0.5">{inv.entry_point} → {inv.target}</p>
+              <div className="flex items-center gap-2 mt-1">
+                <span className={`text-xs ${inv.potential_impact === 'HIGH' ? 'text-red-400' : inv.potential_impact === 'MEDIUM' ? 'text-yellow-400' : 'text-green-400'}`}>
+                  {inv.potential_impact}
+                </span>
+                {inv.llm_used && <span className="text-xs text-purple-400">LLM</span>}
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Attack path visualization */}
+      <div className="flex-1 space-y-4">
+        <div className="bg-bg-secondary border border-border rounded-lg p-4">
+          <h3 className="text-text-secondary text-sm font-medium mb-3">
+            Attack Path Graph
+            {selectedInv && (
+              <span className="ml-2 text-xs text-text-muted">
+                {selectedInv.attack_type ?? 'Unknown'} — Confidence: {((selectedInv.confidence ?? 0) * 100).toFixed(0)}%
+              </span>
+            )}
+          </h3>
+          <AttackPathGraph
+            nodes={selectedInv?.nodes ?? []}
+            edges={selectedInv?.edges ?? []}
+          />
+        </div>
+
+        {selectedInv && (
+          <div className="grid grid-cols-2 gap-4">
+            <div className="bg-bg-secondary border border-border rounded-lg p-4">
+              <h4 className="text-text-muted text-xs uppercase tracking-wide mb-2">Observed Evidence</h4>
+              <ul className="space-y-1">
+                {selectedInv.observed_evidence.map((e, i) => (
+                  <li key={i} className="text-xs text-text-secondary">• {e}</li>
+                ))}
+              </ul>
+            </div>
+            <div className="bg-bg-secondary border border-border rounded-lg p-4">
+              <h4 className="text-text-muted text-xs uppercase tracking-wide mb-2">Hypotheses</h4>
+              <ul className="space-y-1">
+                {selectedInv.hypotheses.map((h, i) => (
+                  <li key={i} className="text-xs text-yellow-400">• {h}</li>
+                ))}
+              </ul>
+            </div>
+            {selectedInv.explanation && (
+              <div className="col-span-2 bg-bg-secondary border border-border rounded-lg p-4">
+                <h4 className="text-text-muted text-xs uppercase tracking-wide mb-2">
+                  Investigation Summary {selectedInv.llm_used && <span className="text-purple-400">(LLM)</span>}
+                </h4>
+                <pre className="text-xs text-text-secondary whitespace-pre-wrap font-sans leading-relaxed">
+                  {selectedInv.explanation}
+                </pre>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}

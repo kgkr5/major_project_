@@ -1,0 +1,350 @@
+"""
+AGENT 1: Detection Agent
+
+Correlates Suricata alerts with ML predictions, applies deterministic
+attack-category rules, calculates risk scores, and produces structured
+DetectionEvent objects.
+"""
+
+import asyncio
+import json
+import logging
+import uuid
+from datetime import datetime, timezone
+from typing import Optional
+
+from backend.core.config import settings
+from backend.core.websocket_manager import manager as ws_manager
+from backend.schemas.agents import DetectionEvent
+from backend.services.risk_engine import risk_engine
+
+logger = logging.getLogger(__name__)
+
+# Attack category detection rules applied in priority order
+_CATEGORY_RULES = [
+    {
+        "category": "Denial of Service",
+        "conditions": lambda ev: (
+            ev.get("high_pkt_rate", False)
+            or any("dos" in sig.lower() or "flood" in sig.lower() for sig in ev.get("signatures", []))
+        ),
+    },
+    {
+        "category": "Brute Force",
+        "conditions": lambda ev: (
+            any(port in ev.get("dest_ports_seen", []) for port in [22, 21, 3389, 445, 25])
+            and (ev.get("repeated_connections", 0) > 5
+                 or any("brute" in sig.lower() or "auth" in sig.lower() or "login" in sig.lower()
+                        for sig in ev.get("signatures", [])))
+        ),
+    },
+    {
+        "category": "Port Scanning",
+        "conditions": lambda ev: (
+            ev.get("syn_only", False)
+            or ev.get("many_ports", False)
+            or any("scan" in sig.lower() or "recon" in sig.lower() for sig in ev.get("signatures", []))
+        ),
+    },
+    {
+        "category": "Suspicious DNS",
+        "conditions": lambda ev: (
+            ev.get("dest_port") == 53
+            or any("dns" in sig.lower() for sig in ev.get("signatures", []))
+        ),
+    },
+    {
+        "category": "Botnet Communication",
+        "conditions": lambda ev: (
+            any("botnet" in sig.lower() or "c2" in sig.lower() or "beacon" in sig.lower()
+                for sig in ev.get("signatures", []))
+        ),
+    },
+    {
+        "category": "Reconnaissance",
+        "conditions": lambda ev: (
+            ev.get("protocol") == "ICMP"
+            or any("probe" in sig.lower() or "sweep" in sig.lower() or "ping" in sig.lower()
+                   for sig in ev.get("signatures", []))
+        ),
+    },
+    {
+        "category": "Suspicious TCP",
+        "conditions": lambda ev: (
+            ev.get("high_rst", False)
+            or any("tcp" in sig.lower() for sig in ev.get("signatures", []))
+        ),
+    },
+]
+
+
+def _determine_category(evidence_ctx: dict) -> Optional[str]:
+    """Apply rules in order and return the first matching category."""
+    for rule in _CATEGORY_RULES:
+        try:
+            if rule["conditions"](evidence_ctx):
+                return rule["category"]
+        except Exception:
+            continue
+    return None
+
+
+class DetectionAgent:
+    """
+    Consumes events from the detection queue, correlates sources,
+    and emits DetectionEvent objects.
+    """
+
+    def __init__(
+        self,
+        detection_queue: asyncio.Queue,
+        analysis_queue: asyncio.Queue,
+        db_session_factory,
+    ) -> None:
+        self._in_queue = detection_queue
+        self._out_queue = analysis_queue
+        self._db_factory = db_session_factory
+        self._running = False
+        self._events_processed = 0
+        self._threats_detected = 0
+        self._last_activity: Optional[datetime] = None
+        self._status = "IDLE"
+        self._error: Optional[str] = None
+
+        # Pending ML predictions keyed by (src_ip, dest_ip) for correlation
+        self._ml_pending: dict = {}
+
+    @property
+    def status(self) -> str:
+        return self._status
+
+    @property
+    def events_processed(self) -> int:
+        return self._events_processed
+
+    @property
+    def threats_detected(self) -> int:
+        return self._threats_detected
+
+    @property
+    def last_activity(self) -> Optional[datetime]:
+        return self._last_activity
+
+    async def start(self) -> None:
+        self._running = True
+        self._status = "RUNNING"
+        logger.info("DetectionAgent started.")
+        await self._run_loop()
+
+    async def stop(self) -> None:
+        self._running = False
+        self._status = "STOPPED"
+        logger.info("DetectionAgent stopped.")
+
+    async def _run_loop(self) -> None:
+        while self._running:
+            try:
+                item = await asyncio.wait_for(self._in_queue.get(), timeout=1.0)
+                await self._process(item)
+                self._in_queue.task_done()
+            except asyncio.TimeoutError:
+                continue
+            except Exception as exc:
+                logger.error("DetectionAgent error: %s", exc, exc_info=True)
+                self._error = str(exc)
+                self._status = "DEGRADED"
+
+    async def _process(self, item: object) -> None:
+        """Process a queued item (SuricataAlert or ML tuple)."""
+        from backend.services.suricata_service import SuricataAlert
+        from backend.schemas.flows import PredictionResult, FlowRecord
+
+        self._events_processed += 1
+        self._last_activity = datetime.now(tz=timezone.utc)
+        self._status = "PROCESSING"
+
+        suricata_alert = None
+        ml_result: Optional[PredictionResult] = None
+        flow_record: Optional[FlowRecord] = None
+
+        if isinstance(item, SuricataAlert):
+            suricata_alert = item
+            src_ip = item.src_ip
+            dest_ip = item.dest_ip
+            src_port = item.src_port
+            dest_port = item.dest_port
+            protocol = item.protocol
+        elif isinstance(item, tuple) and len(item) == 2:
+            # (FlowRecord, PredictionResult) from ML pipeline
+            flow_record, ml_result = item
+            src_ip = flow_record.src_ip
+            dest_ip = flow_record.dest_ip
+            src_port = flow_record.src_port
+            dest_port = flow_record.dest_port
+            protocol = flow_record.protocol
+        else:
+            logger.warning("DetectionAgent received unknown item type: %s", type(item))
+            self._status = "IDLE"
+            return
+
+        # Only create events for ML ATTACK or Suricata alerts
+        if ml_result and ml_result.label == "BENIGN":
+            self._status = "IDLE"
+            return
+
+        # Build evidence context for category rules
+        signatures = [suricata_alert.signature] if suricata_alert else []
+        evidence_ctx = {
+            "src_ip": src_ip,
+            "dest_ip": dest_ip,
+            "dest_port": dest_port,
+            "protocol": protocol,
+            "signatures": signatures,
+            "dest_ports_seen": [dest_port] if dest_port else [],
+            "syn_only": False,
+            "many_ports": False,
+            "high_rst": False,
+            "high_pkt_rate": False,
+            "repeated_connections": 0,
+        }
+
+        # Enrich from flow features if available
+        if flow_record is not None:
+            feats = flow_record.features
+            try:
+                from ml.feature_schema import FEATURE_INDEX
+                syn_count = feats[FEATURE_INDEX["SYN Flag Count"]]
+                ack_count = feats[FEATURE_INDEX["ACK Flag Count"]]
+                rst_count = feats[FEATURE_INDEX["RST Flag Count"]]
+                total_bwd = feats[FEATURE_INDEX["Total Backward Packets"]]
+                flow_pkts_s = feats[FEATURE_INDEX["Flow Packets/s"]]
+                dest_port_val = int(feats[FEATURE_INDEX["Destination Port"]])
+
+                evidence_ctx["syn_only"] = (syn_count > 5 and ack_count < 2)
+                evidence_ctx["high_rst"] = rst_count > 10
+                evidence_ctx["high_pkt_rate"] = flow_pkts_s > 1000
+                evidence_ctx["dest_ports_seen"] = [dest_port_val]
+                evidence_ctx["dest_port"] = dest_port_val
+            except Exception:
+                pass
+
+        attack_category = _determine_category(evidence_ctx)
+
+        # Get related event count from DB
+        related_count = await self._count_related_events(src_ip)
+
+        # Calculate risk score
+        risk = risk_engine.calculate(
+            suricata_alert=suricata_alert is not None,
+            suricata_severity=suricata_alert.severity if suricata_alert else None,
+            ml_prediction=ml_result.label if ml_result else None,
+            ml_confidence=ml_result.confidence if ml_result else None,
+            dest_port=dest_port,
+            related_event_count=related_count,
+        )
+
+        # Build evidence list
+        evidence_items = list(risk.contributing_factors)
+        if suricata_alert:
+            evidence_items.append(f"Suricata: {suricata_alert.signature}")
+        if ml_result:
+            evidence_items.append(
+                f"ML: {ml_result.label} ({ml_result.confidence:.1%} confidence)"
+            )
+
+        event = DetectionEvent(
+            event_id=f"evt-{uuid.uuid4().hex[:12]}",
+            source_ip=src_ip,
+            destination_ip=dest_ip,
+            protocol=protocol,
+            source_port=src_port,
+            destination_port=dest_port,
+            attack_category=attack_category,
+            ml_prediction=ml_result.label if ml_result else None,
+            ml_confidence=ml_result.confidence if ml_result else None,
+            suricata_alert=suricata_alert is not None,
+            suricata_signature=suricata_alert.signature if suricata_alert else None,
+            risk_score=risk.score,
+            severity=risk.severity,
+            evidence=evidence_items,
+            timestamp=datetime.now(tz=timezone.utc),
+        )
+
+        await self._persist(event, suricata_alert, flow_record, risk)
+        self._threats_detected += 1
+        self._status = "IDLE"
+
+        # Broadcast via WebSocket
+        await ws_manager.broadcast({
+            "type": "new_event",
+            "payload": event.model_dump(),
+        })
+
+        # Forward to Attack Analysis Agent
+        await self._out_queue.put(event)
+        logger.info(
+            "DetectionAgent: new event %s | category=%s | risk=%d (%s)",
+            event.event_id, attack_category, risk.score, risk.severity,
+        )
+
+    async def _persist(self, event: DetectionEvent, suricata_alert, flow_record, risk) -> None:
+        """Persist detection event and risk assessment to the database."""
+        import json as _json
+        from backend.database.models import SecurityEvent, RiskAssessment
+        from sqlalchemy import select
+
+        try:
+            async with self._db_factory() as session:
+                # Persist SecurityEvent
+                se = SecurityEvent(
+                    event_id=event.event_id,
+                    source_ip=event.source_ip,
+                    destination_ip=event.destination_ip,
+                    source_port=event.source_port,
+                    destination_port=event.destination_port,
+                    protocol=event.protocol,
+                    attack_category=event.attack_category,
+                    ml_prediction=event.ml_prediction,
+                    ml_confidence=event.ml_confidence,
+                    suricata_alert=event.suricata_alert,
+                    suricata_signature=event.suricata_signature,
+                    risk_score=event.risk_score,
+                    severity=event.severity,
+                    evidence=_json.dumps(event.evidence),
+                    raw_suricata=_json.dumps(suricata_alert.to_dict()) if suricata_alert else None,
+                    ^O
+raw_flow=_json.dumps(flow_record.model_dump()) if flow_record else None,
+                )
+                session.add(se)
+
+                # Persist RiskAssessment
+                ra = RiskAssessment(
+                    assessment_id=f"risk-{uuid.uuid4().hex[:12]}",
+                    event_id=event.event_id,
+                    score=risk.score,
+                    severity=risk.severity,
+                    contributing_factors=_json.dumps(risk.contributing_factors),
+                )
+                session.add(ra)
+                await session.commit()
+        except Exception as exc:
+            logger.error("DetectionAgent DB persist error: %s", exc, exc_info=True)
+
+    async def _count_related_events(self, src_ip: str) -> int:
+        """Count recent security events from the same source IP."""
+        from backend.database.models import SecurityEvent
+        from sqlalchemy import select, func
+        from datetime import timedelta
+
+        try:
+            async with self._db_factory() as session:
+                cutoff = datetime.utcnow() - timedelta(hours=1)
+                result = await session.execute(
+                    select(func.count(SecurityEvent.id)).where(
+                        SecurityEvent.source_ip == src_ip,
+                        SecurityEvent.created_at >= cutoff,
+                    )
+                )
+                return result.scalar() or 0
+        except Exception:
+            return 0

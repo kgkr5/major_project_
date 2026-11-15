@@ -1,0 +1,28 @@
+{
+  "timestamp": "2024-06-15T14:30:00.123456+0000",
+  "flow_id": 1234567890,
+  "in_iface": "eth0",
+  "event_type": "alert",
+  "src_ip": "192.168.1.100",
+  "src_port": 54321,
+  "dest_ip": "192.168.1.10",
+  "dest_port": 22,
+  "proto": "TCP",
+  "alert": {
+    "action": "allowed",
+    "gid": 1,
+    "signature_id": 2001219,
+    "rev": 20,
+    "signature": "ET SCAN Potential SSH Scan",
+    "category": "Attempted Information Leak",
+    "severity": 2
+  },
+  "app_proto": "ssh",
+  "flow": {
+    "pkts_toserver": 3,
+    "pkts_toclient": 0,
+    "bytes_toserver": 180,
+    "bytes_toclient": 0,
+    "start": "2024-06-15T14:29:59.000000+0000"
+  }
+}
