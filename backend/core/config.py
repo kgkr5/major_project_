@@ -1,8 +1,4 @@
-"""
-Centralized configuration for AgentShield backend.
-All settings loaded from environment variables / .env file.
-No credentials are hardcoded.
-"""
+
 
 from pathlib import Path
 from typing import List
@@ -27,7 +23,10 @@ class Settings(BaseSettings):
     # ── API ───────────────────────────────────────────────────────
     api_host: str = "0.0.0.0"
     api_port: int = 8000
-    cors_origins: List[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    cors_origins: List[str] = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
 
     # ── Database ─────────────────────────────────────────────────
     database_url: str = "sqlite+aiosqlite:///./data/agentshield.db"
@@ -44,13 +43,14 @@ class Settings(BaseSettings):
     # ── ML Model ─────────────────────────────────────────────────
     model_path: Path = Path("models/agentshield_rf.pkl")
     model_metadata_path: Path = Path("models/agentshield_rf_metadata.json")
+
     # Path to a minimal test model (used in CI without real CICIDS data)
     test_model_path: Path = Path("models/agentshield_rf_test.pkl")
 
     # ── Ollama ────────────────────────────────────────────────────
     ollama_host: str = "http://localhost:11434"
     ollama_model: str = "llama3.2"
-    ollama_timeout_seconds: int = 30
+    ollama_timeout_seconds: int = 120
 
     # ── Risk thresholds ───────────────────────────────────────────
     risk_critical_threshold: int = 90
@@ -58,8 +58,12 @@ class Settings(BaseSettings):
     risk_medium_threshold: int = 40
     risk_low_threshold: int = 1
 
-    # ── Suricata severity weights (1=low, 2=medium, 3=high) ───────
-    suricata_severity_weights: dict = {1: 50, 2: 35, 3: 20}
+    # ── Suricata severity weights (1=high, 2=medium, 3=low) ───────
+    suricata_severity_weights: dict = {
+        1: 50,
+        2: 35,
+        3: 20,
+    }
 
     # ── Upload ───────────────────────────────────────────────────
     max_pcap_upload_mb: int = 50

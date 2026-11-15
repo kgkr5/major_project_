@@ -161,3 +161,51 @@ async def test_three_agent_attack_pipeline(db_session):
             )
 
     print("\n===== ALL PIPELINE CHECKS PASSED =====")
+
+
+@pytest.mark.asyncio
+async def test_defence_recommendation_targets_and_approval(monkeypatch):
+    from backend.schemas.agents import InvestigationResult
+    from backend.agents import defence_agent as defence_module
+
+    captured = {}
+
+    async def fake_persist(recommendation):
+        captured["recommendation"] = recommendation
+
+    async def fake_broadcast(message):
+        pass
+
+    monkeypatch.setattr(
+        defence_module.ws_manager, "broadcast", fake_broadcast
+    )
+
+    agent = DefenceAgent(asyncio.Queue(), AsyncSessionLocal)
+    monkeypatch.setattr(agent, "_persist", fake_persist)
+
+    investigation = InvestigationResult(
+        investigation_id="test-investigation",
+        event_id="test-event",
+        attack_type=None,
+        entry_point="192.0.2.55",
+        target="198.51.100.20",
+        potential_impact="MEDIUM",
+        confidence=0.60,
+        created_at=datetime.now(timezone.utc),
+    )
+
+    await agent._recommend(investigation)
+
+    recommendation = captured["recommendation"]
+    actions = {
+        action.action_type: action
+        for action in recommendation.recommended_actions
+    }
+
+    assert actions["REVIEW_TRAFFIC"].target == "192.0.2.55"
+    assert actions["CHECK_TARGET"].target == "198.51.100.20"
+    assert actions["UPDATE_RULES"].target is None
+    assert recommendation.requires_admin_approval is True
+    assert recommendation.execution_status == "RECOMMENDED"
+
+    print("\nDefence Agent target assignment: PASSED")
